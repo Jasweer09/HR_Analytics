@@ -1,0 +1,28 @@
+# Virtual environment
+venv/
+__pycache__/
+*.pyc
+
+# Model and preprocessor files (if they're large or sensitive)
+# Uncomment these if you don't want to push the model files to GitHub
+# attrition_model.pkl
+# preprocessor.pkl
+
+# Logs
+logs/
+*.log
+
+# Test data (optional, if you don't want to push it)
+test_data.json
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+
+# macOS and Windows system files
+.DS_Store
+Thumbs.db
+
+# Sensitive files (e.g., API keys, credentials)
+*.env
