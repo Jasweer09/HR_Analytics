@@ -1,5 +1,13 @@
 requests 
-pandas 
 streamlit 
 plotly 
 waitress 
+fastapi==0.110.0
+uvicorn==0.29.0
+xgboost==2.0.0
+scikit-learn==1.2.2
+imblearn==0.12.0
+pandas==2.2.2
+numpy==1.26.4
+python-dotenv==1.0.1
+python-multipart==0.0.9
