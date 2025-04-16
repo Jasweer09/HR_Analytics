@@ -127,9 +127,9 @@ const EmployeeForm = () => {
     console.log("Form Data Sent to Server:", JSON.stringify(formData, null, 2));
 
     try {
-      const responseAttrition = await axios.post("http://localhost:8000/predict_attrition", formData);
-      const responsePerformance = await axios.post("http://localhost:8001/predict_performance", formData);
-      const responseRetention = await axios.post("http://localhost:8001/predict_retention", formData);
+      const responseAttrition = await axios.post("https://hr-analytics-attrition.onrender.com/predict_attrition", formData);
+      const responsePerformance = await axios.post("https://hr-analytics-performance-retention.onrender.com/predict_performance", formData);
+      const responseRetention = await axios.post("https://hr-analytics-performance-retention.onrender.com/predict_retention", formData);
 
       console.log("Attrition Response:", JSON.stringify(responseAttrition.data, null, 2));
       console.log("Performance Response:", JSON.stringify(responsePerformance.data, null, 2));
@@ -173,13 +173,13 @@ const EmployeeForm = () => {
     formData.append("file", csvFile);
 
     try {
-      const responseAttrition = await axios.post("http://localhost:8000/predict_attrition_bulk", formData, {
+      const responseAttrition = await axios.post("https://hr-analytics-attrition.onrender.com/predict_attrition_bulk", formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
-      const responsePerformance = await axios.post("http://localhost:8001/predict_performance_bulk", formData, {
+      const responsePerformance = await axios.post("https://hr-analytics-performance-retention.onrender.com/predict_performance_bulk", formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
-      const responseRetention = await axios.post("http://localhost:8001/predict_retention_bulk", formData, {
+      const responseRetention = await axios.post("https://hr-analytics-performance-retention.onrender.com/predict_retention_bulk", formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
 
