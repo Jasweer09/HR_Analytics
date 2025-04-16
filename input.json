@@ -1,0 +1,16 @@
+{
+    "Age": 40.0,
+    "Gender": "Male",
+    "Department": "Research & Development",
+    "JobRole": "Research Director",
+    "MonthlyIncome": 15000.0,
+    "YearsAtCompany": 10.0,
+    "OverTime": "No",
+    "JobSatisfaction": 4.0,
+    "WorkLifeBalance": 4.0,
+    "TotalWorkingYears": 20.0,
+    "TrainingTimesLastYear": 3.0,
+    "JobInvolvement": 4.0,
+    "EnvironmentSatisfaction": 4.0,
+    "RelationshipSatisfaction": 4.0
+}

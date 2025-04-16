@@ -1,190 +1,232 @@
+from fastapi import FastAPI, HTTPException, UploadFile, File
+from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
 import joblib
 import pandas as pd
-import numpy as np
-from flask import Flask, request, jsonify
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
+from typing import Dict, List, Union
 import logging
-from logging.handlers import RotatingFileHandler
-import os
-from werkzeug.middleware.proxy_fix import ProxyFix
-
-# Initialize Flask app
-app = Flask(__name__)
-
-# Use ProxyFix for production (if behind a reverse proxy like Nginx)
-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
+import json
+import io
 
 # Set up logging
-log_dir = "logs"
-if not os.path.exists(log_dir):
-    os.makedirs(log_dir)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Configure logging with rotation (max 10MB per file, keep 5 backups)
-handler = RotatingFileHandler(os.path.join(log_dir, "app.log"), maxBytes=10*1024*1024, backupCount=5)
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-handler.setFormatter(formatter)
-app.logger.addHandler(handler)
-app.logger.setLevel(logging.INFO)
+prediction_logger = logging.getLogger("predictions")
+prediction_handler = logging.FileHandler("predictions.log")
+prediction_handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
+prediction_logger.addHandler(prediction_handler)
+prediction_logger.setLevel(logging.INFO)
 
-# Load the model and preprocessing objects
+# Initialize FastAPI app
+app = FastAPI(
+    title="HR Analytics API (Attrition)",
+    description="API for predicting employee attrition risk",
+    version="1.0.0"
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Load the attrition model
 try:
-    model = joblib.load('attrition_model.pkl')
-    app.logger.info("Model loaded successfully.")
-    print("Model loaded successfully:", model)  # Add this line for testing
+    logger.info("Loading attrition model...")
+    attrition_model = joblib.load("attrition_model.pkl")
+    logger.info(f"Attrition model loaded. Expects {attrition_model.n_features_in_} features.")
 except Exception as e:
-    app.logger.error(f"Error loading model: {str(e)}")
-    raise
+    logger.error(f"Error loading attrition model: {str(e)}")
+    raise Exception(f"Error loading attrition model: {str(e)}")
 
-# Define feature names (replace with your actual feature names)
-numerical_features = ['MonthlyIncome', 'TenurePerCompany']  # Add all numerical features
-categorical_features = ['OverTime_Yes']  # Add all categorical features
+# Define input data model
+class EmployeeData(BaseModel):
+    Age: Union[float, int]
+    Gender: str
+    Department: str
+    JobRole: str
+    MonthlyIncome: Union[float, int]
+    YearsAtCompany: Union[float, int]
+    OverTime: str
+    JobSatisfaction: Union[float, int]
+    WorkLifeBalance: Union[float, int]
+    TotalWorkingYears: Union[float, int]
+    TrainingTimesLastYear: Union[float, int]
+    JobInvolvement: Union[float, int]
+    EnvironmentSatisfaction: Union[float, int]
+    RelationshipSatisfaction: Union[float, int]
 
-# Load or recreate the preprocessing pipeline
-try:
-    preprocessor = joblib.load('preprocessor.pkl')
-    app.logger.info("Preprocessor loaded successfully.")
-    print("Preprocessor loaded successfully:", preprocessor)  # Add this line for testing
-except FileNotFoundError:
-    # Recreate the preprocessing pipeline
-    preprocessor = ColumnTransformer(
-        transformers=[
-            ('num', StandardScaler(), numerical_features),
-            ('cat', OneHotEncoder(drop='first', handle_unknown='ignore'), categorical_features)
-        ])
-    # Fit the preprocessor on training data (you should save this during training)
-    app.logger.warning("Preprocessor not found. Recreated but not fitted. Ensure it's saved during training.")
-# Expected features after preprocessing (based on training data)
-# This should match the columns in X_train after preprocessing
-expected_features = ['num__MonthlyIncome', 'num__TenurePerCompany', 'cat__OverTime_Yes_True']
+# Root endpoint
+@app.get("/")
+async def root():
+    return {"message": "Welcome to the HR Analytics API (Attrition). Use /predict_attrition to get predictions."}
 
-def preprocess_data(df):
-    """
-    Preprocess the input data to match the training data format.
-    """
+# Preprocessing function
+def preprocess_data(data: pd.DataFrame, categorical_columns: List[str]) -> pd.DataFrame:
+    """Preprocess categorical columns into numeric format."""
+    data = data.copy()
+    if "OverTime" in data.columns:
+        data["OverTime"] = data["OverTime"].map({"Yes": 1, "No": 0})
+    return data
+
+def preprocess_and_predict(data: pd.DataFrame, model, features: List[str]) -> tuple:
+    """Preprocess data and predict using the model."""
     try:
-        # Check for missing features
-        missing_features = [col for col in numerical_features + categorical_features if col not in df.columns]
-        if missing_features:
-            app.logger.error(f"Missing features in input data: {missing_features}")
-            raise ValueError(f"Missing features: {missing_features}")
-
-        # Handle missing values
-        df = df.copy()
-        for col in numerical_features:
-            df[col] = df[col].fillna(df[col].median())
-        for col in categorical_features:
-            df[col] = df[col].fillna(df[col].mode()[0])
-
-        # Apply the preprocessing pipeline
-        processed_data = preprocessor.transform(df)
-
-        # Convert to DataFrame with correct column names
-        if isinstance(processed_data, np.ndarray):
-            processed_df = pd.DataFrame(processed_data, columns=expected_features)
-        else:
-            processed_df = processed_data
-
-        # Ensure all expected features are present
-        for col in expected_features:
-            if col not in processed_df.columns:
-                processed_df[col] = 0
-
-        # Reorder columns to match training data
-        processed_df = processed_df[expected_features]
-
-        app.logger.info("Data preprocessing successful.")
-        return processed_df
-
+        X = data.reindex(columns=features, fill_value=0)
+        predictions = model.predict(X)
+        probabilities = model.predict_proba(X) if hasattr(model, "predict_proba") else None
+        return predictions, probabilities
     except Exception as e:
-        app.logger.error(f"Error in preprocessing: {str(e)}")
-        raise
+        logger.error(f"Prediction error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
 
-def predict_attrition(new_data, threshold=0.3):
-    """
-    Make predictions using the loaded model.
-    """
+# Single attrition prediction endpoint
+@app.post("/predict_attrition")
+async def predict_attrition(employee: EmployeeData) -> Dict[str, float]:
     try:
-        # Convert DataFrame to NumPy array to avoid feature names warning
-        new_data_array = new_data.to_numpy() if isinstance(new_data, pd.DataFrame) else new_data
-        probs = model.predict_proba(new_data_array)[:, 1]
-        predictions = (probs >= threshold).astype(int)
-        return predictions
+        logger.info("Received request for attrition prediction.")
+        logger.info(f"Input data: {employee.model_dump()}")
+
+        # Input validation
+        if employee.JobSatisfaction < 1 or employee.JobSatisfaction > 5:
+            raise HTTPException(status_code=400, detail="JobSatisfaction must be between 1 and 5.")
+        if employee.WorkLifeBalance < 1 or employee.WorkLifeBalance > 5:
+            raise HTTPException(status_code=400, detail="WorkLifeBalance must be between 1 and 5.")
+        if employee.JobInvolvement < 1 or employee.JobInvolvement > 5:
+            raise HTTPException(status_code=400, detail="JobInvolvement must be between 1 and 5.")
+        if employee.EnvironmentSatisfaction < 1 or employee.EnvironmentSatisfaction > 5:
+            raise HTTPException(status_code=400, detail="EnvironmentSatisfaction must be between 1 and 5.")
+        if employee.RelationshipSatisfaction < 1 or employee.RelationshipSatisfaction > 5:
+            raise HTTPException(status_code=400, detail="RelationshipSatisfaction must be between 1 and 5.")
+        if employee.OverTime not in ["Yes", "No"]:
+            raise HTTPException(status_code=400, detail="OverTime must be 'Yes' or 'No'.")
+        if employee.Age < 18 or employee.Age > 100:
+            raise HTTPException(status_code=400, detail="Age must be between 18 and 100.")
+        if employee.MonthlyIncome <= 0:
+            raise HTTPException(status_code=400, detail="MonthlyIncome must be greater than 0.")
+        if employee.YearsAtCompany < 0:
+            raise HTTPException(status_code=400, detail="YearsAtCompany cannot be negative.")
+        if employee.TotalWorkingYears < 0:
+            raise HTTPException(status_code=400, detail="TotalWorkingYears cannot be negative.")
+        if employee.TrainingTimesLastYear < 0:
+            raise HTTPException(status_code=400, detail="TrainingTimesLastYear cannot be negative.")
+        if employee.Gender not in ["Male", "Female"]:
+            raise HTTPException(status_code=400, detail="Gender must be 'Male' or 'Female'.")
+
+        # Convert to DataFrame and preprocess
+        data = pd.DataFrame([employee.model_dump()])
+        categorical_columns = ["OverTime"]
+        data = preprocess_data(data, categorical_columns)
+
+        # Select features
+        attrition_features = ["JobSatisfaction", "WorkLifeBalance", "OverTime"]
+        prediction, probs = preprocess_and_predict(data, attrition_model, attrition_features)
+        probability = float(probs[0][1]) if probs is not None else 0.0
+
+        # Log prediction
+        prediction_log = {
+            "endpoint": "predict_attrition",
+            "input": employee.model_dump(),
+            "prediction": {"AttritionRisk": float(prediction[0]), "AttritionRiskProbability": probability}
+        }
+        prediction_logger.info(json.dumps(prediction_log))
+
+        return {
+            "AttritionRisk": float(prediction[0]),
+            "AttritionRiskProbability": probability
+        }
     except Exception as e:
-        app.logger.error(f"Error in prediction: {str(e)}")
-        raise
+        logger.error(f"Error predicting attrition: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error predicting attrition: {str(e)}")
 
-@app.route('/predict', methods=['POST'])
-def predict():
-    """
-    API endpoint to predict employee attrition.
-    """
+# Bulk attrition prediction endpoint
+@app.post("/predict_attrition_bulk")
+async def predict_attrition_bulk(file: UploadFile = File(...)) -> Dict[str, List]:
     try:
-        # Log the request
-        app.logger.info("Received prediction request.")
+        logger.info("Received request for bulk attrition prediction.")
+        
+        contents = await file.read()
+        data = pd.read_csv(io.BytesIO(contents))
+        logger.info(f"CSV data loaded with {len(data)} rows.")
 
-        # Get data from the request
-        data = request.get_json()
-        if not data:
-            app.logger.error("No data provided in request.")
-            return jsonify({
-                'error': 'No data provided',
-                'message': 'Please provide employee data in JSON format'
-            }), 400
+        required_columns = [
+            "Age", "Gender", "Department", "JobRole", "MonthlyIncome", "YearsAtCompany",
+            "OverTime", "JobSatisfaction", "WorkLifeBalance", "TotalWorkingYears",
+            "TrainingTimesLastYear", "JobInvolvement", "EnvironmentSatisfaction",
+            "RelationshipSatisfaction"
+        ]
+        missing_columns = [col for col in required_columns if col not in data.columns]
+        if missing_columns:
+            raise HTTPException(status_code=400, detail=f"Missing required columns: {missing_columns}")
 
-        # Convert to DataFrame
-        df = pd.DataFrame(data)
+        # Input validation
+        validation_errors = []
+        for idx, row in data.iterrows():
+            if not pd.isna(row["JobSatisfaction"]) and (row["JobSatisfaction"] < 1 or row["JobSatisfaction"] > 5):
+                validation_errors.append(f"Row {idx}: JobSatisfaction must be between 1 and 5.")
+            if not pd.isna(row["WorkLifeBalance"]) and (row["WorkLifeBalance"] < 1 or row["WorkLifeBalance"] > 5):
+                validation_errors.append(f"Row {idx}: WorkLifeBalance must be between 1 and 5.")
+            if not pd.isna(row["JobInvolvement"]) and (row["JobInvolvement"] < 1 or row["JobInvolvement"] > 5):
+                validation_errors.append(f"Row {idx}: JobInvolvement must be between 1 and 5.")
+            if not pd.isna(row["EnvironmentSatisfaction"]) and (row["EnvironmentSatisfaction"] < 1 or row["EnvironmentSatisfaction"] > 5):
+                validation_errors.append(f"Row {idx}: EnvironmentSatisfaction must be between 1 and 5.")
+            if not pd.isna(row["RelationshipSatisfaction"]) and (row["RelationshipSatisfaction"] < 1 or row["RelationshipSatisfaction"] > 5):
+                validation_errors.append(f"Row {idx}: RelationshipSatisfaction must be between 1 and 5.")
+            if row["OverTime"] not in ["Yes", "No"]:
+                validation_errors.append(f"Row {idx}: OverTime must be 'Yes' or 'No'.")
+            if not pd.isna(row["Age"]) and (row["Age"] < 18 or row["Age"] > 100):
+                validation_errors.append(f"Row {idx}: Age must be between 18 and 100.")
+            if not pd.isna(row["MonthlyIncome"]) and row["MonthlyIncome"] <= 0:
+                validation_errors.append(f"Row {idx}: MonthlyIncome must be greater than 0.")
+            if not pd.isna(row["YearsAtCompany"]) and row["YearsAtCompany"] < 0:
+                validation_errors.append(f"Row {idx}: YearsAtCompany cannot be negative.")
+            if not pd.isna(row["TotalWorkingYears"]) and row["TotalWorkingYears"] < 0:
+                validation_errors.append(f"Row {idx}: TotalWorkingYears cannot be negative.")
+            if not pd.isna(row["TrainingTimesLastYear"]) and row["TrainingTimesLastYear"] < 0:
+                validation_errors.append(f"Row {idx}: TrainingTimesLastYear cannot be negative.")
+            if row["Gender"] not in ["Male", "Female"]:
+                validation_errors.append(f"Row {idx}: Gender must be 'Male' or 'Female'.")
+        if validation_errors:
+            raise HTTPException(status_code=400, detail=validation_errors[:10])
 
-        # Validate input data
-        if df.empty:
-            app.logger.error("Empty data provided.")
-            return jsonify({
-                'error': 'Empty data',
-                'message': 'Input data cannot be empty'
-            }), 400
+        # Preprocess
+        categorical_columns = ["OverTime"]
+        data = preprocess_data(data, categorical_columns)
 
-        # Preprocess the data
-        processed_df = preprocess_data(df)
+        # Predict
+        attrition_features = ["JobSatisfaction", "WorkLifeBalance", "OverTime"]
+        predictions, probs = preprocess_and_predict(data, attrition_model, attrition_features)
 
-        # Make predictions
-        predictions = predict_attrition(processed_df)
+        # Prepare response
+        results = [
+            {
+                "EmployeeIndex": int(idx),
+                "AttritionRisk": float(pred),
+                "AttritionRiskProbability": float(prob[1]) if probs is not None else 0.0
+            }
+            for idx, (pred, prob) in enumerate(zip(predictions, probs if probs is not None else [None] * len(predictions)))
+        ]
 
-        # Log the predictions
-        app.logger.info(f"Predictions made: {predictions.tolist()}")
+        for result, row in zip(results, data.to_dict("records")):
+            prediction_log = {
+                "endpoint": "predict_attrition_bulk",
+                "input": row,
+                "prediction": result
+            }
+            prediction_logger.info(json.dumps(prediction_log))
 
-        # Return predictions as JSON
-        return jsonify({
-            'predictions': predictions.tolist(),
-            'message': 'Predictions successful'
-        }), 200
-
+        return {"predictions": results}
     except ValueError as ve:
-        app.logger.error(f"ValueError: {str(ve)}")
-        return jsonify({
-            'error': str(ve),
-            'message': 'Invalid input data'
-        }), 400
-
+        logger.error(f"ValueError in bulk attrition prediction: {str(ve)}")
+        raise HTTPException(status_code=400, detail=f"Invalid data format: {str(ve)}")
     except Exception as e:
-        app.logger.error(f"Unexpected error: {str(e)}")
-        return jsonify({
-            'error': str(e),
-            'message': 'An unexpected error occurred'
-        }), 500
+        logger.error(f"Error predicting bulk attrition: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error predicting bulk attrition: {str(e)}")
 
-@app.route('/health', methods=['GET'])
-def health_check():
-    """
-    Health check endpoint to verify the API is running.
-    """
-    app.logger.info("Health check requested.")
-    return jsonify({
-        'status': 'healthy',
-        'message': 'API is running'
-    }), 200
-
-if __name__ == '__main__':
-    # In production, use a WSGI server like Gunicorn instead of Flask's development server
-    # Example: gunicorn -w 4 -b 0.0.0.0:5000 app:app
-    app.run(debug=False, host='0.0.0.0', port=5000)
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
